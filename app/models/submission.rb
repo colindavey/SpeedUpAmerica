@@ -60,12 +60,31 @@ class Submission < ActiveRecord::Base
   scope :with_zip_code, -> (zip_code) { where(zip_code: zip_code) }
   scope :with_rating, -> (rating) { where(rating: rating) }
   scope :valid_rating, -> { where('rating > 0') }
-  scope :from_mlab, -> { where(from_mlab: true) }
-  scope :not_from_mlab, -> { where(from_mlab: false) }
+  # scope :from_mlab, -> { where(from_mlab: true) }
+  # scope :not_from_mlab, -> { where(from_mlab: false) }
+  scope :from_mlab, -> { where(from_mlab: 1) }
+  scope :not_from_mlab, -> { where(from_mlab: 0) }
   scope :with_census_code, -> (census_code) { where(census_code: census_code) }
 
-  scope :mapbox_filter_by_boundary, -> (boundary_type, test_type) {
+  scope :mapbox_filter_by_boundary, -> (boundary_type, test_type, include_from_mlab) {
+    puts 'mapbox_filter_by_boundary'
+    puts include_from_mlab
     subs = valid_test.with_test_type(test_type)
+    puts "  class: #{subs.class()}"
+    puts "  attributes: #{subs.first.attributes()}"
+    puts "  length: #{subs.length()}"
+
+    if include_from_mlab == "false"
+      puts 'in if'
+      # subs = subs.not_from_mlab()
+      # subs = subs.from_mlab()
+      # puts subs
+      subs = subs.where(from_mlab: 0)
+    end
+    puts 'after if'
+    puts "  class: #{subs.class()}"
+    puts "  attributes: #{subs.first.attributes()}"
+    puts "  length: #{subs.length()}"
 
     if boundary_type == 'census_code'
       subs = subs.joins("LEFT JOIN boundaries b ON b.boundary_type = 'census_tract' AND submissions.census_code = b.boundary_id")
@@ -82,6 +101,10 @@ class Submission < ActiveRecord::Base
     else
       raise 'unknown boundary type: ' + boundary_type
     end
+    puts 'final'
+    puts "  class: #{subs.class()}"
+    puts "  attributes: #{subs.first.attributes()}"
+    puts "  length: #{subs.length()}"
   }
 
   scope :get_provider_for_stats_cache, -> (provider, test_type) { where(provider: provider).with_test_type(test_type) }
@@ -129,16 +152,25 @@ class Submission < ActiveRecord::Base
   end
 
   def self.fetch_tileset_groupby(params)
+    puts 'self.fetch_tileset_groupby(params)'
+    puts params
+    puts params[:include_from_mlab]
+    puts params[:include_from_mlab].present?
+    puts params[:census_code].present?
+    puts params[:zip_code].present?
     providers = provider_names(params[:provider])
     params[:zip_code] = [] if params[:zip_code] == ['all']
     params[:census_code] = [] if params[:census_code] == ['all']
 
-    if params[:zip_code].present? || params[:census_code].present? || providers.present?
+    # if params[:zip_code].present? || params[:census_code].present? || providers.present?
+    if params[:zip_code].present? || params[:census_code].present? || params[:include_from_mlab].present? || providers.present?
+      puts 'from_cache = false'
       from_cache = false
       stats = calculate_tileset_groupby(params, providers)
     else
+      puts 'from_cache = true'
       from_cache = true
-      stats = cached_tileset_groupby(params[:group_by], params[:test_type])
+      stats = cached_tileset_groupby(params[:group_by], params[:test_type], params[:include_from_mlab])
     end
 
     {
@@ -152,7 +184,7 @@ class Submission < ActiveRecord::Base
   def self.calculate_tileset_groupby(params, providers)
     polygon_data = valid_test
     polygon_data = polygon_data.where(provider: providers)              if providers.present? && providers.any?
-    polygon_data = polygon_data.mapbox_filter_by_boundary(params[:group_by], params[:test_type])
+    polygon_data = polygon_data.mapbox_filter_by_boundary(params[:group_by], params[:test_type], params[:include_from_mlab])
 
     stats = polygon_data.map do |id, submissions|
       attribute_name = speed_attribute(params[:test_type])
@@ -171,13 +203,24 @@ class Submission < ActiveRecord::Base
     stats
   end
 
-  def self.cached_tileset_groupby(group_by, test_type)
+  def self.cached_tileset_groupby(group_by, test_type, include_from_mlab)
+    puts 'self.cached_tileset_groupby'
+    print '  '
+    puts include_from_mlab
+
     # Deal with census tract being poorly named in the rest of the code base
     if group_by == 'census_code'
       group_by = 'census_tract'
     end
 
+    # stats = StatsCache.where(:stat_type => group_by, :date_type => 'all', :from_mlab => 0)
     stats = StatsCache.where(:stat_type => group_by, :date_type => 'all')
+    puts 'stats'
+    puts "  length: #{stats.length()}"
+    puts "  class: #{stats.class()}"
+    puts "  attributes: #{stats.first.attributes()}"
+
+    # puts stats
 
     results = []
     stats.each do |stats|
@@ -376,7 +419,7 @@ class Submission < ActiveRecord::Base
     submissions = submissions.with_census_code(params[:census_code]) if params[:census_code].present? && params[:census_code].any?
     submissions = submissions.where(provider: providers)
     # submissions = submissions.where(from_mlab: 1)
-
+    
     test_type = params[:test_type]
     categories = date_ranges.collect { |range| range[:name] }
 
